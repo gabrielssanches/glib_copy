@@ -8,6 +8,8 @@
 typedef struct fileutil_file_prop_st {
     gchar *name;            // file name
     gchar *path;            // absolute path
+    gchar *path_relative;   // relative path
+    gchar *target;          // symlink target
     gint64 size;
     GFileType type;
 } fileutil_file_prop_t;
@@ -15,7 +17,6 @@ typedef struct fileutil_file_prop_st {
 gchar *fileutil_get_line(const gchar *fname, const gint line);
 gint64 fileutil_get_size(const gchar *fname);
 void fileutil_delete(const gchar *fname);
-GList *fileutil_dir_list(gchar *path, gboolean recursive);
 GList *fileutil_ls(const gchar *path, gboolean recursive);
 void fileutil_cp(const gchar *src, const gchar *dest);
 void fileutil_ls_clear(GList *f_list);

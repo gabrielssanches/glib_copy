@@ -100,7 +100,7 @@ int main(int argc, char *argv[]) {
    
     GList *f_list = fileutil_ls(arg_list, arg_recursive);
     fileutil_ls_clear(f_list);
-    //fileutil_cp(arg_if, arg_of);
+    fileutil_cp(arg_if, arg_of);
 
     return 0;
 }

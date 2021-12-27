@@ -51,13 +51,20 @@ static fileutil_file_prop_t *fileutil_get_prop(GFileInfo *f_info, GFile *file_pa
     
     f_prop->name = g_strdup(g_file_info_get_name(f_info));
     f_prop->path = g_file_get_path(file_child);
+    f_prop->path_relative = g_file_get_relative_path(file_parent, file_child);
+    if (f_prop->path_relative == NULL) {
+        f_prop->path_relative = g_strdup(f_prop->name);
+    }
     f_prop->size = g_file_info_get_size(f_info);
     f_prop->type = g_file_info_get_file_type(f_info);
-    g_info("%s;%d;%ld;%s",
+    f_prop->target = g_strdup(g_file_info_get_symlink_target(f_info));
+    g_info("%s;%d;%ld;%s;%s:%s",
         f_prop->name,
         f_prop->type,
         f_prop->size,
-        f_prop->path
+        f_prop->path_relative,
+        f_prop->path,
+        f_prop->target
     );
 #if 0
     gboolean is_symlink = g_file_info_get_is_symlink(f_info);
@@ -66,25 +73,23 @@ static fileutil_file_prop_t *fileutil_get_prop(GFileInfo *f_info, GFile *file_pa
     return f_prop;
 }
 
-#define LS_ATTR G_FILE_ATTRIBUTE_STANDARD_TYPE","G_FILE_ATTRIBUTE_STANDARD_NAME","G_FILE_ATTRIBUTE_STANDARD_SIZE","G_FILE_ATTRIBUTE_STANDARD_IS_SYMLINK","G_FILE_ATTRIBUTE_STANDARD_IS_HIDDEN
-GList *fileutil_ls_dir(GFile *file, gboolean recursive, GList *f_list) {
-    gchar *path = g_file_get_path(file);
+#define LS_ATTR G_FILE_ATTRIBUTE_STANDARD_TYPE","G_FILE_ATTRIBUTE_STANDARD_NAME","G_FILE_ATTRIBUTE_STANDARD_SIZE","G_FILE_ATTRIBUTE_STANDARD_IS_SYMLINK","G_FILE_ATTRIBUTE_STANDARD_IS_HIDDEN","G_FILE_ATTRIBUTE_STANDARD_SYMLINK_TARGET
+static GList *fileutil_ls_dir(GFile *file, gboolean recursive, GList *f_list, GFile *file_top_dir) {
     GFileEnumerator *f_en = g_file_enumerate_children(file, LS_ATTR, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
     for (;;) {
         GFileInfo *f_info = g_file_enumerator_next_file(f_en, NULL, NULL);
         if (f_info == NULL) break;
         GFile *file_child = g_file_enumerator_get_child(f_en, f_info);
 
-        fileutil_file_prop_t *f_prop = fileutil_get_prop(f_info, file, file_child);
+        fileutil_file_prop_t *f_prop = fileutil_get_prop(f_info, file_top_dir, file_child);
         g_object_unref(f_info);
         f_list = g_list_append(f_list, f_prop);
         if (f_prop->type == G_FILE_TYPE_DIRECTORY && recursive) {
             GFile *file_p = g_file_new_for_path(f_prop->path);
-            f_list = fileutil_ls_dir(file_p, recursive, f_list);
+            f_list = fileutil_ls_dir(file_p, recursive, f_list, file_top_dir);
             g_object_unref(file_p);
         }
     }
-    g_free(path);
     g_object_unref(f_en);
     return f_list;
 }
@@ -93,6 +98,8 @@ static void fileutil_prop_free(gpointer data, gpointer user_data) {
     fileutil_file_prop_t *f_prop = data;
     g_free(f_prop->name);
     g_free(f_prop->path);
+    g_free(f_prop->path_relative);
+    g_free(f_prop->target);
 }
 
 void fileutil_ls_clear(GList *f_list) {
@@ -101,33 +108,42 @@ void fileutil_ls_clear(GList *f_list) {
 }
 
 GList *fileutil_ls(const gchar *path, gboolean recursive) {
-    if (path == NULL) return NULL;
-
     GList *f_list = NULL;
+    if (path == NULL) return NULL;
 
     GFile *file = g_file_new_for_path(path);
     g_assert_nonnull(file);
+    gboolean path_exists = g_file_query_exists(file, NULL);
+    if (!path_exists) {
+        g_warning("path %s not found", path);
+        goto out;
+    }
 
     GFileType f_type = g_file_query_file_type(file, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL);
     if (f_type == G_FILE_TYPE_DIRECTORY) {
-        f_list = fileutil_ls_dir(file, recursive, f_list);
+        f_list = fileutil_ls_dir(file, recursive, f_list, file);
     } else {
         GFileInfo* f_info = g_file_query_info(file, LS_ATTR, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
-        fileutil_file_prop_t *f_prop = fileutil_get_prop(f_info, NULL, file);
+        fileutil_file_prop_t *f_prop = fileutil_get_prop(f_info, file, file);
         f_list = g_list_append(f_list, f_prop);
         g_object_unref(f_info);
     }
+out:
     g_object_unref(file);
     return f_list;
 }
 
+/// \brief Copy progress callback
+/// Called at least once when the copy starts
+/// Called when copy finishes (not called if size is 0)
+/// 
 static void fileutil_cp_cbk (
     goffset current_num_bytes,
     goffset total_num_bytes,
     gpointer user_data
 ) {
-    gchar *f_name = user_data;
-    g_printf("%s[%ld/%ld]\n", f_name, current_num_bytes, total_num_bytes);
+    fileutil_file_prop_t *f_prop = user_data;
+    g_debug("%s[%ld/%ld]\n", f_prop->path_relative, current_num_bytes, total_num_bytes);
 }
 
 void fileutil_cp(const gchar *src, const gchar *dest) {
@@ -136,45 +152,66 @@ void fileutil_cp(const gchar *src, const gchar *dest) {
     GList *f_list = fileutil_ls(src, TRUE);
     if (f_list == NULL) return;
 
+#if 0
     GFile *test_path_dest = g_file_new_for_path(dest);
     GFileType f_type_dest = g_file_query_file_type(test_path_dest, G_FILE_COPY_NOFOLLOW_SYMLINKS, NULL);
     //g_file_query_exists
     if (f_type_dest == G_FILE_TYPE_UNKNOWN) {
         // most likely it doesn't exists
     }
-
-
-    g_printf("File Type=%d\n", f_type_dest);
-    //if (!g_file_make_directory_with_parents(gfile, NULL, NULL)) {
-
-    GList *it = f_list;
+#endif
     GError *error = NULL;
+    gboolean create_dirs = TRUE;
+    for (;;) {
+    GList *it = f_list;
     for (;it != NULL; it = g_list_next(it)) {
         fileutil_file_prop_t *f_prop = it->data;
-        g_printf("> %s\n", f_prop->path);
-        continue;
-
-        gchar *path_src = g_strdup_printf("%s", f_prop->path);
-        gchar *path_dest = NULL;
-		//if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
-		//g_strdup_printf("%s/%s", dest, f_prop->name);
-        GFile *file_src = g_file_new_for_path(path_src);
+        g_debug("cp %s\n", f_prop->path);
+        
+        gchar *path_dest = g_strdup_printf("%s/%s", dest, f_prop->path_relative);
         GFile *file_dest = g_file_new_for_path(path_dest);
-
-        gboolean res = g_file_copy(
-            file_src,
-            file_dest,
-            G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_ALL_METADATA,
-            NULL, // cancelable
-            fileutil_cp_cbk,
-            NULL,
-            &error
-        );
-        g_printf("[%s]%s\n", res?"OK":"FAILED", f_prop->name);
-        if (error != NULL) {
-            g_warning("Error on copy: [%d|%d] %s", error->domain, error->code, error->message);
-            g_error_free(error);
-			error = NULL;
+		if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
+            // create dest dir instead of file copying (no error checking needed)
+            (void)g_file_make_directory_with_parents(file_dest, NULL, NULL);
         }
+        if (create_dirs) goto skip;
+        if (f_prop->type == G_FILE_TYPE_SYMBOLIC_LINK) {
+            gboolean res = g_file_make_symbolic_link(file_dest, f_prop->target, NULL, &error);
+            if (!res) {
+                if (error != NULL) {
+                    g_warning("Error creating symlink: [%d|%d] %s", error->domain, error->code, error->message);
+                    g_error_free(error);
+                    error = NULL;
+                }
+            }
+        } else if (f_prop->type == G_FILE_TYPE_REGULAR) {
+            GFile *file_src = g_file_new_for_path(f_prop->path);
+            gboolean res = g_file_copy(
+                file_src,
+                file_dest,
+                G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_ALL_METADATA,
+                NULL, // cancelable
+                fileutil_cp_cbk,
+                f_prop,
+                &error
+            );
+            if (error != NULL) {
+                g_warning("Error on copy: [%d|%d] %s", error->domain, error->code, error->message);
+                g_error_free(error);
+                error = NULL;
+            }
+            g_object_unref(file_src);
+        } else if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
+            goto skip;
+        } else {
+            g_warning("Unhandled copy of %s, type=%d", f_prop->path, f_prop->type);
+        }
+skip:
+        g_free(path_dest);
+        g_object_unref(file_dest);
     }
+        if (!create_dirs) break;
+        create_dirs = FALSE;
+    }
+    fileutil_ls_clear(f_list);
 }
