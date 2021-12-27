@@ -8,20 +8,23 @@
 #include <stdlib.h>
 #include <syslog.h>
 
+
 static gboolean arg_verbose = FALSE;
 static gchar *arg_log_level = "none";
 static gchar *arg_log_files = "all";
 static gchar *arg_if = NULL;
 static gchar *arg_of = NULL;
+static gchar *arg_list = NULL;
 static gboolean arg_recursive = FALSE;
 
 static GOptionEntry entries[] = { 
     { "verbose", 'v', 0, G_OPTION_ARG_NONE, &arg_verbose, "Be verbose", NULL },
     { "log-level", 'l', 0, G_OPTION_ARG_FILENAME, &arg_log_level, "Message level that gets logged/displayed. Comma separated list: message info debug all", "<log levels>" },
     { "log-files", 'f', 0, G_OPTION_ARG_FILENAME, &arg_log_files, "Files that get logged. Comma separated list ex: main.c test_file.c", "<file list>" },
-    { "if", 'i', 0, G_OPTION_ARG_FILENAME, &arg_if, "Source path", "<source path>" },
-    { "of", 'o', 0, G_OPTION_ARG_FILENAME, &arg_of, "Destination path", "<destination path>" },
-    { "recursive", 'r', 0, G_OPTION_ARG_NONE, &arg_verbose, "Be verbose", NULL },
+    { "if", 'i', 0, G_OPTION_ARG_FILENAME, &arg_if, "Source path", "<path>" },
+    { "of", 'o', 0, G_OPTION_ARG_FILENAME, &arg_of, "Destination path", "<path>" },
+    { "list", 't', 0, G_OPTION_ARG_FILENAME, &arg_list, "List path", "<path>" },
+    { "recursive", 'r', 0, G_OPTION_ARG_NONE, &arg_recursive, "Be recursive", NULL },
     { NULL }
 };
 
@@ -85,15 +88,19 @@ int main(int argc, char *argv[]) {
     if (g_str_match_string("debug", arg_log_level, TRUE)) {
         _log_level |= G_LOG_LEVEL_DEBUG;
     }
-    if (arg_verbose | g_str_match_string("all", arg_log_level, TRUE)) {
+    if (arg_verbose || g_str_match_string("all", arg_log_level, TRUE)) {
         _log_level |= G_LOG_LEVEL_MASK;
     }
 
     g_log_set_writer_func(log_writer, NULL, NULL);
 
     openlog("glib_copy", LOG_NDELAY, 0);
-    
 
+    g_message("hey");
+   
+    GList *f_list = fileutil_ls(arg_list, arg_recursive);
+    fileutil_ls_clear(f_list);
+    //fileutil_cp(arg_if, arg_of);
 
     return 0;
 }
