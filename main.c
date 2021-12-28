@@ -62,6 +62,24 @@ GLogWriterOutput log_writer (
     return G_LOG_WRITER_HANDLED;
 }
 
+typedef struct cp_data_st {
+    gchar *src;
+    gchar *dest;
+} cp_data_t;
+
+static gboolean cp_progress_cbk(fileutil_cp_code_t code, fileutil_cp_t *cp_info, gchar *msg) {
+    g_debug("> %d %s [%ld/%ld]\n", code, cp_info->f_prop->path_relative, cp_info->current_fileno, cp_info->total_fileno);
+    return TRUE;
+}
+
+static gpointer thread_cp(gpointer data) {
+    cp_data_t *cp_data = data;
+
+    fileutil_cp(cp_data->src, cp_data->dest, cp_progress_cbk);
+
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     GError *error = NULL;
     GOptionContext *context;
@@ -100,7 +118,15 @@ int main(int argc, char *argv[]) {
    
     GList *f_list = fileutil_ls(arg_list, arg_recursive);
     fileutil_ls_clear(f_list);
-    fileutil_cp(arg_if, arg_of);
+
+    cp_data_t cp_data;
+    cp_data.src = arg_if;
+    cp_data.dest = arg_of;
+    GThread *t_cp = g_thread_new("Copy", thread_cp, &cp_data);
+
+    g_thread_join(t_cp);
+
+    g_printf("Done\n");
 
     return 0;
 }

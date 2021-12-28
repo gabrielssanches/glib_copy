@@ -133,88 +133,116 @@ out:
     return f_list;
 }
 
+#if 0
 /// \brief Copy progress callback
 /// Called at least once when the copy starts
 /// Called when copy finishes (not called if size is 0)
-/// 
 static void fileutil_cp_cbk (
     goffset current_num_bytes,
     goffset total_num_bytes,
     gpointer user_data
 ) {
-    fileutil_file_prop_t *f_prop = user_data;
-    g_debug("%s[%ld/%ld]\n", f_prop->path_relative, current_num_bytes, total_num_bytes);
+    fileutil_cp_t *cp_info = user_data;
+    //g_debug("%s[%ld/%ld]\n", f_prop->path_relative, current_num_bytes, total_num_bytes);
+    g_debug("> %s [%ld/%ld][%ld/%ld]\n", cp_info->f_prop->path_relative, cp_info->current_fileno, cp_info->total_fileno, current_num_bytes, total_num_bytes);
+}
+#endif
+
+static gboolean dummy_cp_progress_cbk(fileutil_cp_code_t code, fileutil_cp_t *cp_info, gchar *msg) {
+    return TRUE;
 }
 
-void fileutil_cp(const gchar *src, const gchar *dest) {
+void fileutil_cp(const gchar *src, const gchar *dest, progress_cbk_t progress_cbk) {
     if (src == NULL || dest == NULL) return;
+
+    progress_cbk_t prog_cbk = dummy_cp_progress_cbk;
+    if (progress_cbk != NULL) prog_cbk = progress_cbk;
 
     GList *f_list = fileutil_ls(src, TRUE);
     if (f_list == NULL) {
         g_warning("Could not list path %s", src);
         return;
     }
+    GFile *file_dest_top_dir = g_file_new_for_path(dest);
+    (void)g_file_make_directory_with_parents(file_dest_top_dir, NULL, NULL);
+    g_object_unref(file_dest_top_dir);
 
     GError *error = NULL;
     gboolean create_dirs = TRUE;
     for (;;) {
-    GList *it = f_list;
-    for (;it != NULL; it = g_list_next(it)) {
-        fileutil_file_prop_t *f_prop = it->data;
-        g_debug("cp %s\n", f_prop->path);
-        
-        gchar *path_dest = g_strdup_printf("%s/%s", dest, f_prop->path_relative);
-        GFile *file_dest = g_file_new_for_path(path_dest);
-        if (create_dirs) {
-            if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
-                // create dest dir instead of file copying (no error checking needed)
-                (void)g_file_make_directory_with_parents(file_dest, NULL, NULL);
+        GList *it = f_list;
+        fileutil_cp_t cp_info;
+        cp_info.current_fileno = 0;
+        cp_info.total_fileno = g_list_length(f_list);
+        for (;it != NULL; it = g_list_next(it)) {
+            fileutil_file_prop_t *f_prop = it->data;
+            gboolean res_cbk = TRUE;
+            gchar *err_msg = NULL;
+
+            cp_info.f_prop = f_prop;
+            gchar *path_dest = g_strdup_printf("%s/%s", dest, f_prop->path_relative);
+            GFile *file_dest = g_file_new_for_path(path_dest);
+            if (create_dirs) {
+                if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
+                    // create dest dir instead of file copying (no error checking needed)
+                    (void)g_file_make_directory_with_parents(file_dest, NULL, NULL);
+                }
+            } else {
                 goto skip;
             }
-        }
-        if (f_prop->type == G_FILE_TYPE_SYMBOLIC_LINK) {
-            gboolean res = g_file_make_symbolic_link(file_dest, f_prop->target, NULL, &error);
-            if (error != NULL) {
-                g_warning("Error creating symlink for %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
-                g_error_free(error);
-                error = NULL;
-            } else if (!res) {
-                g_warning("Error copying %s: unknown", f_prop->path_relative);
+            cp_info.current_fileno++;
+            res_cbk = prog_cbk(FUCP_START, &cp_info, NULL);
+            if (f_prop->type == G_FILE_TYPE_SYMBOLIC_LINK) {
+                gboolean res = g_file_make_symbolic_link(file_dest, f_prop->target, NULL, &error);
+                if (error != NULL) {
+                    err_msg = g_strdup_printf("Error creating symlink for %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
+                    g_error_free(error);
+                    error = NULL;
+                } else if (!res) {
+                    err_msg = g_strdup_printf("Error copying %s: unknown", f_prop->path_relative);
+                } else {
+                    g_info("symlink created for %s", f_prop->path_relative);
+                }
+            } else if (f_prop->type == G_FILE_TYPE_REGULAR) {
+                GFile *file_src = g_file_new_for_path(f_prop->path);
+                gboolean res = g_file_copy(
+                    file_src,
+                    file_dest,
+                    G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_ALL_METADATA,
+                    NULL, // cancelable
+                    NULL, // progress callback
+                    NULL, // progress callback user data
+                    &error
+                );
+                if (error != NULL) {
+                    err_msg = g_strdup_printf("Error copying %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
+                    g_error_free(error);
+                    error = NULL;
+                } else if (!res) {
+                    err_msg = g_strdup_printf("Error copying %s: unknown", f_prop->path_relative);
+                } else {
+                    g_info("file %s copied", f_prop->path_relative);
+                }
+                g_object_unref(file_src);
+            } else if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
             } else {
-                g_info("symlink created for %s", f_prop->path_relative);
+                err_msg = g_strdup_printf("Unhandled copy of %s, type=%d", f_prop->path, f_prop->type);
             }
-        } else if (f_prop->type == G_FILE_TYPE_REGULAR) {
-            GFile *file_src = g_file_new_for_path(f_prop->path);
-            gboolean res = g_file_copy(
-                file_src,
-                file_dest,
-                G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS | G_FILE_COPY_ALL_METADATA,
-                NULL, // cancelable
-                fileutil_cp_cbk,
-                f_prop,
-                &error
-            );
-            if (error != NULL) {
-                g_warning("Error copying %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
-                g_error_free(error);
-                error = NULL;
-            } else if (!res) {
-                g_warning("Error copying %s: unknown", f_prop->path_relative);
+            if (err_msg != NULL) {
+                g_warning("%s", err_msg);
+                res_cbk = prog_cbk(FUCP_ERROR, &cp_info, err_msg);
+                g_free(err_msg);
             } else {
-                g_info("file %s copied", f_prop->path_relative);
+                res_cbk = prog_cbk(FUCP_DONE, &cp_info, err_msg);
             }
-            g_object_unref(file_src);
-        } else if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
-            goto skip;
-        } else {
-            g_warning("Unhandled copy of %s, type=%d", f_prop->path, f_prop->type);
+    skip:
+            g_free(path_dest);
+            g_object_unref(file_dest);
+            if (!res_cbk) goto out;
         }
-skip:
-        g_free(path_dest);
-        g_object_unref(file_dest);
-    }
         if (!create_dirs) break;
         create_dirs = FALSE;
     }
+out:
     fileutil_ls_clear(f_list);
 }
