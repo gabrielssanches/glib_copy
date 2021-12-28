@@ -19,9 +19,14 @@ clean:
 	rm -f *.d
 
 DEPFLAGS = -MT $@ -MMD -MP -MF $*.d
+CFLAGS=-std=gnu99
+CFLAGS+=-Werror -Wall
+#CFLAGS+=-pedantic
+CFLAGS+=-O0
+CFLAGS+=$(GIO_FLAGS_L)
 
 %.o:%.c
-	gcc -ggdb3 -O0 -c -std=gnu99 $(DEPFLAGS) $(GIO_FLAGS_I) $< -o $@
+	gcc -ggdb3 -c $(CFLAGS) $(DEPFLAGS) $(GIO_FLAGS_I) $< -o $@
 
 $(SRC): Makefile
 	touch $@

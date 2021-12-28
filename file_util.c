@@ -150,16 +150,11 @@ void fileutil_cp(const gchar *src, const gchar *dest) {
     if (src == NULL || dest == NULL) return;
 
     GList *f_list = fileutil_ls(src, TRUE);
-    if (f_list == NULL) return;
-
-#if 0
-    GFile *test_path_dest = g_file_new_for_path(dest);
-    GFileType f_type_dest = g_file_query_file_type(test_path_dest, G_FILE_COPY_NOFOLLOW_SYMLINKS, NULL);
-    //g_file_query_exists
-    if (f_type_dest == G_FILE_TYPE_UNKNOWN) {
-        // most likely it doesn't exists
+    if (f_list == NULL) {
+        g_warning("Could not list path %s", src);
+        return;
     }
-#endif
+
     GError *error = NULL;
     gboolean create_dirs = TRUE;
     for (;;) {
@@ -170,19 +165,23 @@ void fileutil_cp(const gchar *src, const gchar *dest) {
         
         gchar *path_dest = g_strdup_printf("%s/%s", dest, f_prop->path_relative);
         GFile *file_dest = g_file_new_for_path(path_dest);
-		if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
-            // create dest dir instead of file copying (no error checking needed)
-            (void)g_file_make_directory_with_parents(file_dest, NULL, NULL);
+        if (create_dirs) {
+            if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
+                // create dest dir instead of file copying (no error checking needed)
+                (void)g_file_make_directory_with_parents(file_dest, NULL, NULL);
+                goto skip;
+            }
         }
-        if (create_dirs) goto skip;
         if (f_prop->type == G_FILE_TYPE_SYMBOLIC_LINK) {
             gboolean res = g_file_make_symbolic_link(file_dest, f_prop->target, NULL, &error);
-            if (!res) {
-                if (error != NULL) {
-                    g_warning("Error creating symlink: [%d|%d] %s", error->domain, error->code, error->message);
-                    g_error_free(error);
-                    error = NULL;
-                }
+            if (error != NULL) {
+                g_warning("Error creating symlink for %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
+                g_error_free(error);
+                error = NULL;
+            } else if (!res) {
+                g_warning("Error copying %s: unknown", f_prop->path_relative);
+            } else {
+                g_info("symlink created for %s", f_prop->path_relative);
             }
         } else if (f_prop->type == G_FILE_TYPE_REGULAR) {
             GFile *file_src = g_file_new_for_path(f_prop->path);
@@ -196,9 +195,13 @@ void fileutil_cp(const gchar *src, const gchar *dest) {
                 &error
             );
             if (error != NULL) {
-                g_warning("Error on copy: [%d|%d] %s", error->domain, error->code, error->message);
+                g_warning("Error copying %s: [%d|%d] %s", f_prop->path_relative, error->domain, error->code, error->message);
                 g_error_free(error);
                 error = NULL;
+            } else if (!res) {
+                g_warning("Error copying %s: unknown", f_prop->path_relative);
+            } else {
+                g_info("file %s copied", f_prop->path_relative);
             }
             g_object_unref(file_src);
         } else if (f_prop->type == G_FILE_TYPE_DIRECTORY) {
